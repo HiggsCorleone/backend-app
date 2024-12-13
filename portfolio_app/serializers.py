@@ -1,5 +1,10 @@
 from rest_framework import serializers
 from .models import User, Portfolio, Stock, StockLot, Transaction,News
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+from django.contrib.auth.hashers import make_password, check_password
+from rest_framework_simplejwt.tokens import RefreshToken
 
 class StockSerializer(serializers.ModelSerializer):
     class Meta:
@@ -79,32 +84,128 @@ class TransactionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {'stock_symbol': 'Stock not found'}
             )
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        # Add extra responses
+        data['username'] = self.user.username
+        data['email'] = self.user.email
+        data['language'] = self.user.language
+        if self.user.portfolio:
+            data['portfolio_id'] = self.user.portfolio.id
+        return data
+
+class RegisterSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=True)
+    password2 = serializers.CharField(write_only=True, required=True)
+
+    class Meta:
+        model = User
+        fields = ['username', 'email', 'password', 'password2', 'language']
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs['password2']:
+            raise serializers.ValidationError({"password": "Password fields didn't match."})
+        return attrs
+
+    def create(self, validated_data):
+        # Remove password confirmation field
+        validated_data.pop('password2')
+        
+        # Hash the password
+        validated_data['password'] = make_password(validated_data['password'])
+        
+        # Create portfolio
+        portfolio = Portfolio.objects.create()
+        
+        # Create user with hashed password and portfolio
+        user = User.objects.create(
+            portfolio=portfolio,
+            **validated_data
+        )
+        
+        return user
 
 class UserSerializer(serializers.ModelSerializer):
     portfolio = PortfolioSerializer(read_only=True)
     transaction_count = serializers.SerializerMethodField()
+    password = serializers.CharField(write_only=True, required=True)
+    confirm_password = serializers.CharField(write_only=True, required=True)
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'language',
-            'portfolio', 'transaction_count'
+            'portfolio', 'transaction_count', 'password',
+            'confirm_password'
         ]
-        extra_kwargs = {
-            'password': {'write_only': True}
-        }
 
     def get_transaction_count(self, obj):
         return obj.transactions.count()
 
+    def validate(self, data):
+        # Password validation
+        if 'password' in data:
+            if len(data['password']) < 8:
+                raise ValidationError("Password must be at least 8 characters long")
+            
+            if data['password'] != data.pop('confirm_password', None):
+                raise ValidationError("Passwords do not match")
+
+        return data
+
     def create(self, validated_data):
-        # Create user and associated portfolio
+        # Hash password and create user
+        validated_data['password'] = make_password(validated_data['password'])
+        
+        # Create portfolio first
         portfolio = Portfolio.objects.create()
+        
+        # Create user with portfolio
         user = User.objects.create(
             portfolio=portfolio,
             **validated_data
         )
         return user
+
+    def update(self, instance, validated_data):
+        # Handle password updates
+        if 'password' in validated_data:
+            validated_data['password'] = make_password(validated_data['password'])
+        
+        return super().update(instance, validated_data)
+    
+
+class LoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        email = data.get('email', None)
+        password = data.get('password', None)
+
+        if email is None:
+            raise ValidationError("An email address is required to login")
+
+        if password is None:
+            raise ValidationError("A password is required to login")
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            raise ValidationError("User with this email does not exist")
+
+        if not check_password(password, user.password):
+            raise ValidationError("Incorrect password")
+
+        # Generate JWT tokens
+        refresh = RefreshToken.for_user(user)
+
+        return {
+            'user': user,
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+        }
 class NewsSerializer(serializers.ModelSerializer):
     class Meta:
         model = News

@@ -173,6 +173,20 @@ class User(models.Model):
     def __str__(self):
         return self.username
 
+    # Add these methods for JWT compatibility
+    def get_username(self):
+        return self.username
+
+    @property
+    def is_active(self):
+        return True
+
+    def get_full_name(self):
+        return self.username
+
+    def get_short_name(self):
+        return self.username
+
 class Transaction(models.Model):
     TRANSACTION_TYPES = [
         ('BUY', 'Buy'),

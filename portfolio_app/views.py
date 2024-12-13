@@ -4,16 +4,119 @@ from rest_framework.response import Response
 from decimal import Decimal
 from .models import News
 from .serializers import NewsSerializer
+import jwt
+from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
+from datetime import datetime, timedelta
+from django.conf import settings
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
+from django.contrib.auth.hashers import check_password
+from rest_framework import generics
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import get_user_model
 
 from .models import User, Portfolio, Stock, StockLot, Transaction
 from .serializers import (
     UserSerializer, 
     PortfolioSerializer, 
     StockSerializer,
-    TransactionSerializer, 
-    StockLotSerializer
+    TransactionSerializer,
+    CustomTokenObtainPairSerializer,
+    RegisterSerializer,
+    StockLotSerializer,
+    LoginSerializer
 )
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
+def generate_tokens(user):
+    """Generate access and refresh tokens manually"""
+    # Access token - expires in 1 hour
+    access_payload = {
+        'user_id': user.id,
+        'exp': datetime.utcnow() + timedelta(hours=1),
+        'type': 'access'
+    }
+    
+    # Refresh token - expires in 1 day
+    refresh_payload = {
+        'user_id': user.id,
+        'exp': datetime.utcnow() + timedelta(days=1),
+        'type': 'refresh'
+    }
+    
+    access_token = jwt.encode(access_payload, settings.SECRET_KEY, algorithm='HS256')
+    refresh_token = jwt.encode(refresh_payload, settings.SECRET_KEY, algorithm='HS256')
+    
+    return {
+        'access': access_token,
+        'refresh': refresh_token
+    }
 
+class RegisterView(generics.CreateAPIView):
+    queryset = User.objects.all()
+    permission_classes = (AllowAny,)
+    serializer_class = RegisterSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        
+        # Generate tokens manually
+        tokens = generate_tokens(user)
+        
+        return Response({
+            'user': UserSerializer(user).data,
+            'tokens': tokens
+        }, status=status.HTTP_201_CREATED)
+
+class LoginView(generics.GenericAPIView):
+    permission_classes = (AllowAny,)
+    
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['email', 'password'],
+            properties={
+                'email': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_EMAIL),
+                'password': openapi.Schema(type=openapi.TYPE_STRING),
+            }
+        )
+    )
+    def post(self, request):
+        email = request.data.get('email')
+        password = request.data.get('password')
+        
+        try:
+            user = User.objects.get(email=email)
+            # Use check_password to compare hashed password
+            if check_password(password, user.password):
+                tokens = generate_tokens(user)
+                return Response({
+                    'user': UserSerializer(user).data,
+                    'tokens': tokens
+                })
+            else:
+                return Response({'error': 'Invalid credentials'}, 
+                              status=status.HTTP_401_UNAUTHORIZED)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, 
+                          status=status.HTTP_404_NOT_FOUND)
+
+class LogoutView(generics.GenericAPIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
+        try:
+            refresh_token = request.data["refresh"]
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+            return Response(status=status.HTTP_205_RESET_CONTENT)
+        except Exception:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
 class StockViewSet(viewsets.ModelViewSet):
     queryset = Stock.objects.all()
     serializer_class = StockSerializer
@@ -58,7 +161,35 @@ class PortfolioViewSet(viewsets.ModelViewSet):
                     (((portfolio.cash_balance + stock_value) - 10000) / 10000 * 100)
             }
         })
-
+    @swagger_auto_schema(
+        method='post',
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['symbol', 'quantity', 'price'],
+            properties={
+                'symbol': openapi.Schema(type=openapi.TYPE_STRING, description='Stock symbol'),
+                'quantity': openapi.Schema(type=openapi.TYPE_INTEGER, description='Number of shares to buy'),
+                'price': openapi.Schema(type=openapi.TYPE_NUMBER, description='Price per share')
+            }
+        ),
+        responses={
+            200: openapi.Response(
+                description="Buy operation successful",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'status': openapi.Schema(type=openapi.TYPE_STRING),
+                        'transaction': openapi.Schema(type=openapi.TYPE_OBJECT),
+                        'lot': openapi.Schema(type=openapi.TYPE_OBJECT),
+                        'cash_balance': openapi.Schema(type=openapi.TYPE_NUMBER),
+                        'total_value': openapi.Schema(type=openapi.TYPE_NUMBER)
+                    }
+                )
+            ),
+            400: 'Bad Request',
+            404: 'Stock not found'
+        }
+    )
     @action(detail=True, methods=['post'])
     def buy(self, request, pk=None):
         """Buy stocks if user has enough cash"""
@@ -110,7 +241,35 @@ class PortfolioViewSet(viewsets.ModelViewSet):
                 {'error': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
+    @swagger_auto_schema(
+        method='post',
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['symbol', 'quantity', 'price'],
+            properties={
+                'symbol': openapi.Schema(type=openapi.TYPE_STRING, description='Stock symbol'),
+                'quantity': openapi.Schema(type=openapi.TYPE_INTEGER, description='Number of shares to sell'),
+                'price': openapi.Schema(type=openapi.TYPE_NUMBER, description='Price per share')
+            }
+        ),
+        responses={
+            200: openapi.Response(
+                description="Sale operation successful",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'status': openapi.Schema(type=openapi.TYPE_STRING),
+                        'realized_gain': openapi.Schema(type=openapi.TYPE_NUMBER),
+                        'transactions': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_OBJECT)),
+                        'cash_balance': openapi.Schema(type=openapi.TYPE_NUMBER),
+                        'total_value': openapi.Schema(type=openapi.TYPE_NUMBER)
+                    }
+                )
+            ),
+            400: 'Bad Request - Not enough shares or invalid input',
+            404: 'Stock not found'
+        }
+    )
     @action(detail=True, methods=['post'])
     def sell(self, request, pk=None):
         """Sell stocks using FIFO method"""

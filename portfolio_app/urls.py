@@ -1,5 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from rest_framework_simplejwt.views import TokenRefreshView
 
 # Import the views
 from .views import (
@@ -7,7 +8,11 @@ from .views import (
     PortfolioViewSet,
     StockViewSet,
     TransactionViewSet,
-    NewsViewSet
+    NewsViewSet,
+    CustomTokenObtainPairView,
+    RegisterView,
+    LogoutView,
+    LoginView
 )
 
 # Initialize router
@@ -22,5 +27,9 @@ router.register(r'news', NewsViewSet)
 
 # The API URLs are determined automatically by the router
 urlpatterns = [
+    path('auth/register/', RegisterView.as_view(), name='auth_register'),
+    path('auth/login/', LoginView.as_view(), name='auth_login'),
+
+
     path('', include(router.urls)),
 ]
