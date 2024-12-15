@@ -27,6 +27,7 @@ router.register(r'news', NewsViewSet)
 
 # The API URLs are determined automatically by the router
 urlpatterns = [
+    path('auth/logout/', LogoutView.as_view(), name='auth_logout'),
     path('auth/register/', RegisterView.as_view(), name='auth_register'),
     path('auth/login/', LoginView.as_view(), name='auth_login'),
 

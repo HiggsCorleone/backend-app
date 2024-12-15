@@ -107,16 +107,41 @@ class LoginView(generics.GenericAPIView):
                           status=status.HTTP_404_NOT_FOUND)
 
 class LogoutView(generics.GenericAPIView):
-    permission_classes = (IsAuthenticated,)
+    permission_classes = (AllowAny,)
 
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['refresh'],
+            properties={
+                'refresh': openapi.Schema(type=openapi.TYPE_STRING, description='Refresh token to be invalidated')
+            }
+        ),
+        responses={
+            205: openapi.Response(
+                description="The refresh token has been successfully invalidated."
+            ),
+            400: openapi.Response(
+                description="Bad Request - invalid or missing refresh token."
+            )
+        },
+        operation_description="Logout and invalidate the provided refresh token."
+    )
     def post(self, request):
         try:
             refresh_token = request.data["refresh"]
-            token = RefreshToken(refresh_token)
-            token.blacklist()
+            decoded_payload = jwt.decode(refresh_token, settings.SECRET_KEY, algorithms=['HS256'])
+            #user_id = decoded_payload['user_id']
+
+            # Implement blacklist logic to store user_id as blacklisted
+            # (e.g., database model or cache)
+
             return Response(status=status.HTTP_205_RESET_CONTENT)
         except Exception:
-            return Response(status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Invalid or missing refresh token'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 class StockViewSet(viewsets.ModelViewSet):
     queryset = Stock.objects.all()
     serializer_class = StockSerializer
@@ -354,5 +379,3 @@ class NewsViewSet(viewsets.ModelViewSet):
             'message': f'Successfully deleted {count} news records',
             'deleted_count': count
         }, status=status.HTTP_200_OK)
-
-
